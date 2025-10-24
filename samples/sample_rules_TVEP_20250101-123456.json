@@ -1,0 +1,45 @@
+{
+    "project": "TVEP",
+    "version": 1,
+    "exported_at": "2025-01-01T12:34:56Z",
+    "wbs_list": [
+        {
+            "wbs_code": "WBS001",
+            "description": "벽체",
+            "updated_ts": 1735727696
+        },
+        {
+            "wbs_code": "WBS002",
+            "description": "슬래브",
+            "updated_ts": 1735727697
+        }
+    ],
+    "revit_type_mapping": [
+        {
+            "type_name": "Basic Wall:200T",
+            "wbs_code": "WBS001",
+            "updated_ts": 1735727696
+        },
+        {
+            "type_name": "Floor:RC-250",
+            "wbs_code": "WBS002",
+            "updated_ts": 1735727697
+        }
+    ],
+    "calculation_rules": [
+        {
+            "wbs_code": "WBS001",
+            "rule_type": "AREA",
+            "formula": "Width*Height",
+            "unit": "m2",
+            "updated_ts": 1735727701
+        },
+        {
+            "wbs_code": "WBS002",
+            "rule_type": "AREA",
+            "formula": "Length*Width",
+            "unit": "m2",
+            "updated_ts": 1735727702
+        }
+    ]
+}
