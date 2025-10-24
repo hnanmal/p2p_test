@@ -5,6 +5,23 @@ from typing import Dict, Any
 REQUIRED_COMMON = ["type", "payload", "ts", "node_id", "token"]
 
 
+# def validate_message(msg: Dict[str, Any]) -> bool:
+#     for k in REQUIRED_COMMON:
+#         if k not in msg:
+#             return False
+#     if not isinstance(msg["type"], str):
+#         return False
+#     if not isinstance(msg["payload"], dict):
+#         return False
+#     if not isinstance(msg["ts"], int):
+#         return False
+#     if not isinstance(msg["node_id"], str):
+#         return False
+#     if not isinstance(msg["token"], str):
+#         return False
+#     return True
+
+
 def validate_message(msg: Dict[str, Any]) -> bool:
     for k in REQUIRED_COMMON:
         if k not in msg:
@@ -19,6 +36,7 @@ def validate_message(msg: Dict[str, Any]) -> bool:
         return False
     if not isinstance(msg["token"], str):
         return False
+    # 추가 validation은 type별로 수신 측에서 처리
     return True
 
 

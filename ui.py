@@ -3,9 +3,12 @@ import logging
 import asyncio
 import threading
 import socket
+import queue
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog
 from pathlib import Path
+import time
+from typing import Optional
 
 from db import (
     list_wbs,
@@ -17,17 +20,17 @@ from db import (
     list_rules,
     upsert_rule,
     delete_rule,
-    # get_change_seq   # (선택) 변경 감지 카운터는 사용하지 않는 페일세이프 모드
 )
 from io_json import export_snapshot, import_snapshot
 from sync.node import Node
 from sync.broadcaster import Broadcaster
+from sync.discovery import Discovery  # 자동 발견 사용 중이면 유지
 
 logger = logging.getLogger("ui")
 
 
 # ----------------------------
-# Asyncio 백그라운드 워커 (크로스플랫폼)
+# Asyncio 백그라운드 워커
 # ----------------------------
 class AsyncioWorker(threading.Thread):
     def __init__(self):
@@ -56,10 +59,7 @@ class AsyncioWorker(threading.Thread):
             self._started_evt.wait()
 
     def submit(self, coro_or_fn, *args, **kwargs):
-        """
-        코루틴 객체/함수 모두 허용.
-        - submit(runner) / submit(runner()) 모두 OK
-        """
+        """코루틴 객체/함수/콜러블 모두 허용."""
         import inspect
 
         self.start_loop()
@@ -94,7 +94,7 @@ def _default_node_id() -> str:
 
 
 # ----------------------------
-# WBS Frame
+# Frames (WBS/Mapping/Rules) - 기존과 동일
 # ----------------------------
 class WBSFrame(ttk.Frame):
     def __init__(self, parent, db_path: Path):
@@ -117,14 +117,12 @@ class WBSFrame(ttk.Frame):
             self.tree.heading(col, text=txt)
             self.tree.column(col, width=w, stretch=False)
         self.tree.grid(row=0, column=0, columnspan=3, sticky="nsew", padx=5, pady=5)
-
         ttk.Label(self, text="WBS Code").grid(row=1, column=0, sticky="e")
         ttk.Label(self, text="Description").grid(row=2, column=0, sticky="e")
         self.wbs_code = ttk.Entry(self)
         self.desc = ttk.Entry(self, width=50)
         self.wbs_code.grid(row=1, column=1, sticky="w")
         self.desc.grid(row=2, column=1, sticky="w")
-
         ttk.Button(self, text="Save/Upsert", command=self.save).grid(
             row=1, column=2, padx=5
         )
@@ -134,7 +132,6 @@ class WBSFrame(ttk.Frame):
         ttk.Button(self, text="Refresh", command=self.refresh).grid(
             row=0, column=2, padx=5, sticky="ne"
         )
-
         self.tree.bind("<<TreeviewSelect>>", self.on_select)
         self.grid_rowconfigure(0, weight=1)
         self.grid_columnconfigure(1, weight=1)
@@ -177,9 +174,6 @@ class WBSFrame(ttk.Frame):
             self.refresh()
 
 
-# ----------------------------
-# Mapping Frame
-# ----------------------------
 class MappingFrame(ttk.Frame):
     def __init__(self, parent, db_path: Path):
         super().__init__(parent)
@@ -201,14 +195,12 @@ class MappingFrame(ttk.Frame):
             self.tree.heading(col, text=txt)
             self.tree.column(col, width=w, stretch=False)
         self.tree.grid(row=0, column=0, columnspan=3, sticky="nsew", padx=5, pady=5)
-
         ttk.Label(self, text="Revit Type").grid(row=1, column=0, sticky="e")
         ttk.Label(self, text="WBS Code").grid(row=2, column=0, sticky="e")
         self.type_name = ttk.Entry(self, width=40)
         self.wbs_code = ttk.Entry(self, width=20)
         self.type_name.grid(row=1, column=1, sticky="w")
         self.wbs_code.grid(row=2, column=1, sticky="w")
-
         ttk.Button(self, text="Save/Upsert", command=self.save).grid(
             row=1, column=2, padx=5
         )
@@ -218,7 +210,6 @@ class MappingFrame(ttk.Frame):
         ttk.Button(self, text="Refresh", command=self.refresh).grid(
             row=0, column=2, padx=5, sticky="ne"
         )
-
         self.tree.bind("<<TreeviewSelect>>", self.on_select)
         self.grid_rowconfigure(0, weight=1)
         self.grid_columnconfigure(1, weight=1)
@@ -262,9 +253,6 @@ class MappingFrame(ttk.Frame):
             self.refresh()
 
 
-# ----------------------------
-# Rules Frame
-# ----------------------------
 class RulesFrame(ttk.Frame):
     def __init__(self, parent, db_path: Path):
         super().__init__(parent)
@@ -289,22 +277,18 @@ class RulesFrame(ttk.Frame):
             self.tree.heading(col, text=txt)
             self.tree.column(col, width=w, stretch=False)
         self.tree.grid(row=0, column=0, columnspan=3, sticky="nsew", padx=5, pady=5)
-
         ttk.Label(self, text="WBS Code").grid(row=1, column=0, sticky="e")
         ttk.Label(self, text="Rule Type").grid(row=2, column=0, sticky="e")
         ttk.Label(self, text="Formula").grid(row=3, column=0, sticky="e")
         ttk.Label(self, text="Unit").grid(row=4, column=0, sticky="e")
-
         self.wbs_code = ttk.Entry(self, width=20)
         self.rule_type = ttk.Entry(self, width=20)
         self.formula = ttk.Entry(self, width=50)
         self.unit = ttk.Entry(self, width=10)
-
         self.wbs_code.grid(row=1, column=1, sticky="w")
         self.rule_type.grid(row=2, column=1, sticky="w")
         self.formula.grid(row=3, column=1, sticky="w")
         self.unit.grid(row=4, column=1, sticky="w")
-
         ttk.Button(self, text="Save/Upsert", command=self.save).grid(
             row=1, column=2, padx=5
         )
@@ -314,7 +298,6 @@ class RulesFrame(ttk.Frame):
         ttk.Button(self, text="Refresh", command=self.refresh).grid(
             row=0, column=2, padx=5, sticky="ne"
         )
-
         self.tree.bind("<<TreeviewSelect>>", self.on_select)
         self.grid_rowconfigure(0, weight=1)
         self.grid_columnconfigure(1, weight=1)
@@ -366,6 +349,109 @@ class RulesFrame(ttk.Frame):
 
 
 # ----------------------------
+# Peer Monitor Window (Toplevel)
+# ----------------------------
+class PeerMonitor(tk.Toplevel):
+    def __init__(self, master, app_ref):
+        super().__init__(master)
+        self.title("피어 목록 (실시간)")
+        self.geometry("720x320")
+        self.resizable(True, True)
+        self.app = app_ref  # App 참조 (node, worker, discovery 등 접근용)
+        cols = (
+            "host",
+            "port",
+            "direction",
+            "state",
+            "remote_node_id",
+            "connected_at",
+            "last_seen",
+            "errors",
+        )
+        self.tree = ttk.Treeview(self, columns=cols, show="headings", height=12)
+        headers = {
+            "host": "Host",
+            "port": "Port",
+            "direction": "Dir",
+            "state": "State",
+            "remote_node_id": "Remote Node",
+            "connected_at": "Connected",
+            "last_seen": "Last Seen",
+            "errors": "Errors",
+        }
+        widths = {
+            "host": 150,
+            "port": 60,
+            "direction": 60,
+            "state": 90,
+            "remote_node_id": 160,
+            "connected_at": 120,
+            "last_seen": 120,
+            "errors": 60,
+        }
+        for c in cols:
+            self.tree.heading(c, text=headers[c])
+            self.tree.column(c, width=widths[c], anchor="w", stretch=False)
+        self.tree.pack(fill="both", expand=True, padx=6, pady=6)
+
+        # 하단 버튼
+        btns = ttk.Frame(self)
+        btns.pack(fill="x", padx=6, pady=4)
+        ttk.Button(btns, text="지금 찾기", command=self._discover_now).pack(side="left")
+        ttk.Button(btns, text="닫기", command=self._on_close).pack(side="right")
+
+        # 창 닫기 핸들러
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    def _on_close(self):
+        # App이 콜백 해제/정리는 외부에서 수행
+        self.destroy()
+
+    def _discover_now(self):
+        # Discovery가 있으면 즉시 탐색 송신
+        if not self.app.discovery:
+            messagebox.showwarning(
+                "자동 발견", "자동 발견이 꺼져있습니다. P2P 시작 후 사용하세요."
+            )
+            return
+
+        async def runner():
+            await self.app.discovery.send_discover_now()
+
+        self.app.worker.submit(runner)
+        self.app.status.set("Discover sent now")
+
+    def _fmt_time(self, epoch: float) -> str:
+        if not epoch:
+            return ""
+        try:
+            return time.strftime("%H:%M:%S", time.localtime(epoch))
+        except Exception:
+            return str(epoch)
+
+    def update_peers(self, peers: list[dict]):
+        # 전체 갱신(소규모라 부담 적음)
+        try:
+            current_ids = set(self.tree.get_children())
+            for iid in current_ids:
+                self.tree.delete(iid)
+            for m in peers:
+                vals = (
+                    m.get("host", ""),
+                    str(m.get("port", "")),
+                    m.get("direction", ""),
+                    m.get("state", ""),
+                    m.get("remote_node_id", ""),
+                    self._fmt_time(m.get("connected_at", 0.0)),
+                    self._fmt_time(m.get("last_seen", 0.0)),
+                    str(m.get("errors", 0)),
+                )
+                self.tree.insert("", "end", values=vals)
+        except Exception as e:
+            logger.exception(f"PeerMonitor update error: {e}")
+
+
+# ----------------------------
 # Main App
 # ----------------------------
 class App(ttk.Frame):
@@ -379,13 +465,26 @@ class App(ttk.Frame):
         self.port_var = tk.StringVar(value="9000")
         self.token_var = tk.StringVar(value="SHARED-SECRET")
 
-        self.node = None
-        self.broadcaster = None
-        self.worker = AsyncioWorker()  # 백그라운드 asyncio 루프
+        self.node: Optional[Node] = None
+        self.broadcaster: Optional[Broadcaster] = None
+        self.discovery: Optional[Discovery] = None
+        self.worker = AsyncioWorker()
 
-        # ★ 페일세이프 자동 새로고침 설정
+        # UI 이벤트 큐 (DB/Peer 이벤트 수신)
+        self.ui_event_q = queue.Queue()
+
+        # 자동 새로고침(페일세이프)
         self.auto_refresh_enabled = tk.BooleanVar(value=True)
         self.auto_refresh_ms = tk.IntVar(value=1000)
+
+        # 자동 발견 옵션
+        self.autodiscover_enabled = tk.BooleanVar(value=True)
+        self.discovery_port = tk.IntVar(value=9999)
+        self.discovery_interval_ms = tk.IntVar(value=3000)
+        self.discovery_iface_ip = tk.StringVar(value="")  # 비워두면 ANY
+
+        # 피어 목록 창
+        self.peer_window: Optional[PeerMonitor] = None
 
         self._build()
 
@@ -393,7 +492,7 @@ class App(ttk.Frame):
         self.master.title("Rules Collaboration - P2P LWW (B)")
         self.pack(fill="both", expand=True)
 
-        # Top bar: project & import/export
+        # Export/Import
         top = ttk.Frame(self)
         top.pack(fill="x", padx=5, pady=5)
         ttk.Label(top, text="Project").pack(side="left")
@@ -427,69 +526,124 @@ class App(ttk.Frame):
         ttk.Button(p2p, text="피어 추가", command=self.add_peer).pack(
             side="left", padx=5
         )
+        ttk.Button(p2p, text="피어 목록", command=self.open_peer_window).pack(
+            side="left", padx=5
+        )  # ★ 추가
 
-        # Auto refresh bar (페일세이프)
-        ar = ttk.Frame(self)
-        ar.pack(fill="x", padx=5, pady=5)
+        # Auto-Discovery bar
+        ad = ttk.Frame(self)
+        ad.pack(fill="x", padx=5, pady=5)
         ttk.Checkbutton(
-            ar, text="자동 새로고침", variable=self.auto_refresh_enabled
+            ad, text="자동 피어 발견", variable=self.autodiscover_enabled
         ).pack(side="left")
-        ttk.Label(ar, text="주기(ms)").pack(side="left", padx=(10, 2))
+        ttk.Label(ad, text="UDP 포트").pack(side="left", padx=(8, 2))
         ttk.Spinbox(
-            ar,
-            from_=200,
-            to=5000,
-            increment=100,
-            textvariable=self.auto_refresh_ms,
-            width=6,
+            ad,
+            from_=1024,
+            to=65535,
+            increment=1,
+            textvariable=self.discovery_port,
+            width=7,
         ).pack(side="left")
-        ttk.Button(ar, text="지금 새로고침", command=self.refresh_all).pack(
-            side="left", padx=10
+        ttk.Label(ad, text="주기(ms)").pack(side="left", padx=(8, 2))
+        ttk.Spinbox(
+            ad,
+            from_=500,
+            to=10000,
+            increment=500,
+            textvariable=self.discovery_interval_ms,
+            width=7,
+        ).pack(side="left")
+        ttk.Label(ad, text="iface_ip").pack(side="left", padx=(8, 2))
+        ttk.Entry(ad, textvariable=self.discovery_iface_ip, width=14).pack(side="left")
+        ttk.Button(ad, text="지금 찾기", command=self.discover_now).pack(
+            side="left", padx=8
         )
 
         # Notebook tabs
         nb = ttk.Notebook(self)
         nb.pack(fill="both", expand=True, padx=5, pady=5)
-
         self.wbs_frame = WBSFrame(nb, self.db_path)
         self.map_frame = MappingFrame(nb, self.db_path)
         self.rules_frame = RulesFrame(nb, self.db_path)
-
         nb.add(self.wbs_frame, text="WBS 관리")
         nb.add(self.map_frame, text="타입-매핑")
         nb.add(self.rules_frame, text="산출규칙")
 
         # Status bar
-        self.status = tk.StringVar(value="Ready.")
+        self.status = tk.StringVar(value=f"Ready. DB: {self.db_path}")
         status_bar = ttk.Label(self, textvariable=self.status, anchor="w")
         status_bar.pack(fill="x")
 
-        # 안전 종료 훅
+        # 종료 훅
         self.master.protocol("WM_DELETE_WINDOW", self._on_close)
 
-        # ★ 페일세이프 자동 새로고침 루프 시작
+        # 이벤트 큐 폴링 & 페일세이프 자동 새로고침 루프
+        self.after(200, self._poll_ui_events)
         self.after(self.auto_refresh_ms.get(), self._auto_refresh_tick)
 
-    def _on_close(self):
-        try:
-            self.stop_p2p()
-        finally:
-            self.master.destroy()
+    # ---------- Peer Monitor ----------
+    def open_peer_window(self):
+        if self.peer_window and self.peer_window.winfo_exists():
+            self.peer_window.lift()
+            return
+        self.peer_window = PeerMonitor(self.master, self)
+        # Node에 피어 이벤트 콜백 등록 → UI 큐로 밀어넣기
+        if self.node:
 
-    # -------- 페일세이프 Auto Refresh ----------
+            def on_peer_event(evt: dict):
+                try:
+                    # 스레드-세이프 큐로 전달
+                    self.ui_event_q.put(("peer_update", evt.get("peers", [])))
+                except Exception as e:
+                    logger.warning(f"enqueue peer event failed: {e}")
+
+            self.node.set_peer_event_callback(on_peer_event)
+            # 현재 스냅샷 1회 강제 발행
+            self.node.fire_peer_snapshot_threadsafe()
+
+    # ---------- UI 이벤트/자동 갱신 ----------
+    def _poll_ui_events(self):
+        try:
+            fired_refresh = False
+            peers_payload = None
+            while True:
+                try:
+                    kind, data = self.ui_event_q.get_nowait()
+                except queue.Empty:
+                    break
+                if kind == "peer_update":
+                    peers_payload = data  # 마지막만 반영
+                else:
+                    # DB 변경 등의 다른 타입도 있었으면 여기서 처리
+                    fired_refresh = True
+            if (
+                peers_payload is not None
+                and self.peer_window
+                and self.peer_window.winfo_exists()
+            ):
+                self.peer_window.update_peers(peers_payload)
+            if fired_refresh:
+                # 필요 시 다른 뷰 리프레시
+                pass
+        except Exception as e:
+            logger.exception(f"UI event poll error: {e}")
+        finally:
+            self.after(200, self._poll_ui_events)
+
     def _auto_refresh_tick(self):
         try:
             if self.auto_refresh_enabled.get():
                 self.refresh_all()
-                # 상태바에 주기 반영 (원하면 주석처리 가능)
-                self.status.set(f"Auto-refreshed every {self.auto_refresh_ms.get()}ms")
+                self.status.set(
+                    f"Auto-refreshed every {self.auto_refresh_ms.get()}ms | DB: {self.db_path}"
+                )
         except Exception as e:
             logger.exception(f"Auto refresh tick error: {e}")
         finally:
             self.after(self.auto_refresh_ms.get(), self._auto_refresh_tick)
 
     def refresh_all(self):
-        """전체 탭 새로고침 (부하 적음: 소규모 데이터셋)"""
         try:
             self.wbs_frame.refresh()
             self.map_frame.refresh()
@@ -497,7 +651,7 @@ class App(ttk.Frame):
         except Exception as e:
             logger.exception(f"Refresh all error: {e}")
 
-    # -------- Import/Export ----------
+    # ---------- Import/Export ----------
     def on_export(self):
         project = self.project_var.get().strip() or "PROJECT"
         out_dir = filedialog.askdirectory(title="Select export directory")
@@ -518,7 +672,7 @@ class App(ttk.Frame):
         self.status.set(f"Imported: WBS={w}, Mappings={m}, Rules={r}")
         messagebox.showinfo("Import", f"Imported: WBS={w}, Mappings={m}, Rules={r}")
 
-    # -------- P2P 제어 ----------
+    # ---------- P2P ----------
     def start_p2p(self):
         if self.node:
             messagebox.showinfo("P2P", "Already running")
@@ -534,14 +688,40 @@ class App(ttk.Frame):
             self.db_path, self.node, node_id=node_id, token=token
         )
 
+        # 자동 발견 초기화(안정 버전 Discovery 사용 중이라면)
+        if self.autodiscover_enabled.get():
+            self.discovery = Discovery(
+                self.node,
+                token=token,
+                port=self.discovery_port.get(),
+                interval=self.discovery_interval_ms.get() / 1000.0,
+                iface_ip=(self.discovery_iface_ip.get().strip() or None),
+                ttl=1,
+                loopback=1,
+            )
+        else:
+            self.discovery = None
+
+        # 피어 이벤트 콜백 등록(피어 창이 열려있든 아니든 수신)
+        def on_peer_event(evt: dict):
+            try:
+                self.ui_event_q.put(("peer_update", evt.get("peers", [])))
+            except Exception as e:
+                logger.warning(f"enqueue peer event failed: {e}")
+
+        self.node.set_peer_event_callback(on_peer_event)
+
         async def runner():
             await self.node.start()
             self.broadcaster.attach()
+            if self.discovery:
+                await self.discovery.start()
+                await self.discovery.send_discover_now()
             logger.info(
                 f"P2P started in asyncio worker (node_id={node_id}, port={port})"
             )
 
-        self.worker.submit(runner)  # 코루틴 함수 전달 OK (submit이 감싸줌)
+        self.worker.submit(runner)
         self.status.set(f"P2P Started: node_id={node_id}, port={port}")
 
     def stop_p2p(self):
@@ -550,6 +730,8 @@ class App(ttk.Frame):
 
         async def runner():
             try:
+                if self.discovery:
+                    await self.discovery.stop()
                 if self.broadcaster:
                     self.broadcaster.detach()
                 if self.node:
@@ -562,9 +744,9 @@ class App(ttk.Frame):
             fut.result(timeout=5)
         except Exception:
             pass
-
         self.node = None
         self.broadcaster = None
+        self.discovery = None
         self.status.set("P2P Stopped")
 
     def add_peer(self):
@@ -589,9 +771,29 @@ class App(ttk.Frame):
         self.worker.submit(runner)
         self.status.set(f"Peer added: {host}:{port}")
 
+    def discover_now(self):
+        if not self.discovery:
+            messagebox.showwarning(
+                "자동 발견", "먼저 P2P를 시작하거나 자동 발견을 켜세요"
+            )
+            return
+
+        async def runner():
+            await self.discovery.send_discover_now()
+
+        self.worker.submit(runner)
+        self.status.set("Discover sent now")
+
+    # ---------- 공통 ----------
+    def _on_close(self):
+        try:
+            self.stop_p2p()
+        finally:
+            self.master.destroy()
+
 
 def run_app(db_path: Path):
     root = tk.Tk()
     app = App(root, db_path)
-    root.geometry("1024x680")
+    root.geometry("1100x720")
     root.mainloop()

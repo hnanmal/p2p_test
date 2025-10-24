@@ -28,3 +28,18 @@ class CalculationRuleItem(Base):
     formula = Column(String)
     unit = Column(String)
     updated_ts = Column(Integer, nullable=False)
+
+
+class TombstoneItem(Base):
+    __tablename__ = "tombstones"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    entity = Column(
+        String, nullable=False
+    )  # 'wbs_list' | 'revit_type_mapping' | 'calculation_rules'
+    key = Column(
+        String, nullable=False
+    )  # 키 문자열 (예: 'WBS001' / 'Basic Wall:200T|WBS001')
+    deleted_ts = Column(Integer, nullable=False)
+    __table_args__ = (
+        UniqueConstraint("entity", "key", "deleted_ts", name="uq_tombstone_once"),
+    )

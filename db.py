@@ -8,7 +8,13 @@ from contextlib import contextmanager
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker, Session
 
-from models import Base, WBSItem, RevitTypeMappingItem, CalculationRuleItem
+from models import (
+    Base,
+    WBSItem,
+    RevitTypeMappingItem,
+    CalculationRuleItem,
+    TombstoneItem,
+)
 
 logger = logging.getLogger("db")
 
@@ -174,18 +180,55 @@ def upsert_wbs(
             )
 
 
+# def delete_wbs(db_path: Path, wbs_code: str):
+#     with get_session(db_path) as s:
+#         obj = s.get(WBSItem, wbs_code)
+#         if obj:
+#             ts = _now_ts()
+#             s.delete(obj)
+#             s.commit()
+#             logger.info(f"Delete WBS: {wbs_code}")
+#             _bump_change_seq(ts)  # ★
+#             _trigger_change("delete_wbs", {"wbs_code": wbs_code}, ts)
+#         else:
+#             logger.info(f"Delete WBS: not found ({wbs_code})")
+
+
 def delete_wbs(db_path: Path, wbs_code: str):
     with get_session(db_path) as s:
         obj = s.get(WBSItem, wbs_code)
         if obj:
-            ts = _now_ts()
+            ts = int(time.time())
             s.delete(obj)
             s.commit()
             logger.info(f"Delete WBS: {wbs_code}")
-            _bump_change_seq(ts)  # ★
+            # ★ tombstone 기록
+            record_tombstone(db_path, "wbs_list", wbs_code, ts)
+            _bump_change_seq(ts)
             _trigger_change("delete_wbs", {"wbs_code": wbs_code}, ts)
         else:
             logger.info(f"Delete WBS: not found ({wbs_code})")
+
+
+# Tombstone 유틸
+def record_tombstone(db_path: Path, entity: str, key: str, deleted_ts: int):
+    with get_session(db_path) as s:
+        s.add(TombstoneItem(entity=entity, key=key, deleted_ts=int(deleted_ts)))
+        s.commit()
+        logger.info(f"Tombstone recorded: {entity} | {key} (ts={deleted_ts})")
+
+
+def list_tombstones(db_path: Path) -> List[Dict[str, Any]]:
+    with get_session(db_path) as s:
+        rows = (
+            s.execute(select(TombstoneItem).order_by(TombstoneItem.deleted_ts))
+            .scalars()
+            .all()
+        )
+        return [
+            {"entity": r.entity, "key": r.key, "deleted_ts": int(r.deleted_ts)}
+            for r in rows
+        ]
 
 
 # ---------- Revit Type Mapping ----------
@@ -251,6 +294,31 @@ def upsert_mapping(
             )
 
 
+# def delete_mapping(db_path: Path, type_name: str, wbs_code: str):
+#     with get_session(db_path) as s:
+#         obj = (
+#             s.execute(
+#                 select(RevitTypeMappingItem).where(
+#                     RevitTypeMappingItem.type_name == type_name,
+#                     RevitTypeMappingItem.wbs_code == wbs_code,
+#                 )
+#             )
+#             .scalars()
+#             .first()
+#         )
+#         if obj:
+#             ts = _now_ts()
+#             s.delete(obj)
+#             s.commit()
+#             logger.info(f"Delete Mapping: {type_name} | {wbs_code}")
+#             _bump_change_seq(ts)  # ★
+#             _trigger_change(
+#                 "delete_mapping", {"type_name": type_name, "wbs_code": wbs_code}, ts
+#             )
+#         else:
+#             logger.info(f"Delete Mapping: not found ({type_name} | {wbs_code})")
+
+
 def delete_mapping(db_path: Path, type_name: str, wbs_code: str):
     with get_session(db_path) as s:
         obj = (
@@ -264,11 +332,15 @@ def delete_mapping(db_path: Path, type_name: str, wbs_code: str):
             .first()
         )
         if obj:
-            ts = _now_ts()
+            ts = int(time.time())
             s.delete(obj)
             s.commit()
             logger.info(f"Delete Mapping: {type_name} | {wbs_code}")
-            _bump_change_seq(ts)  # ★
+            # ★ tombstone 기록 (키 포맷: 'type_name|wbs_code')
+            record_tombstone(
+                db_path, "revit_type_mapping", f"{type_name}|{wbs_code}", ts
+            )
+            _bump_change_seq(ts)
             _trigger_change(
                 "delete_mapping", {"type_name": type_name, "wbs_code": wbs_code}, ts
             )
@@ -349,15 +421,31 @@ def upsert_rule(
             )
 
 
+# def delete_rule(db_path: Path, wbs_code: str):
+#     with get_session(db_path) as s:
+#         obj = s.get(CalculationRuleItem, wbs_code)
+#         if obj:
+#             ts = _now_ts()
+#             s.delete(obj)
+#             s.commit()
+#             logger.info(f"Delete Rule: {wbs_code}")
+#             _bump_change_seq(ts)  # ★
+#             _trigger_change("delete_rule", {"wbs_code": wbs_code}, ts)
+#         else:
+#             logger.info(f"Delete Rule: not found ({wbs_code})")
+
+
 def delete_rule(db_path: Path, wbs_code: str):
     with get_session(db_path) as s:
         obj = s.get(CalculationRuleItem, wbs_code)
         if obj:
-            ts = _now_ts()
+            ts = int(time.time())
             s.delete(obj)
             s.commit()
             logger.info(f"Delete Rule: {wbs_code}")
-            _bump_change_seq(ts)  # ★
+            # ★ tombstone 기록
+            record_tombstone(db_path, "calculation_rules", wbs_code, ts)
+            _bump_change_seq(ts)
             _trigger_change("delete_rule", {"wbs_code": wbs_code}, ts)
         else:
             logger.info(f"Delete Rule: not found ({wbs_code})")
